@@ -325,6 +325,45 @@
       white-space: nowrap;
     }
     .copy-ok.show { transform: translateX(-50%) translateY(0); }
+
+    .breadcrumb-wrap {
+      display: none;
+      margin: 0 0 14px;
+      padding: 12px;
+      border-radius: 18px;
+      background: rgba(120,200,80,.10);
+      border: 1px solid rgba(63,143,59,.18);
+    }
+    .breadcrumb-title {
+      font-size: 12px;
+      font-weight: 900;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .breadcrumb {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: center;
+    }
+    .crumb {
+      border: 1px solid rgba(63,143,59,.24);
+      background: #fff;
+      color: #244f23;
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 900;
+      cursor: pointer;
+      box-shadow: 0 4px 10px rgba(31,82,29,.07);
+    }
+    .crumb:active { transform: scale(.97); }
+    .crumb-sep {
+      color: rgba(36,79,35,.55);
+      font-weight: 900;
+      font-size: 12px;
+    }
+
     .footer-note {
       color: #31572c;
       font-size: 12px;
@@ -361,6 +400,10 @@
         </div>
       </div>
       <div class="card">
+        <div id="breadcrumbWrap" class="breadcrumb-wrap">
+          <div class="breadcrumb-title">現在の選択</div>
+          <div id="breadcrumb" class="breadcrumb"></div>
+        </div>
         <h2 id="questionTitle" class="question-title">質問</h2>
         <p id="questionSub" class="question-sub"></p>
         <div id="choices" class="choices"></div>
@@ -406,14 +449,15 @@ const state = {
   answers: {},
   currentStep: 1,
   currentParentId: "",
+  categoryNodeId: "",
   genre: ""
 };
 
 const fixedSteps = [
   { step: 1, key: "genre", title: "何について相談したい？", sub: "近いものを選んでください。" },
   { step: 2, key: "category", title: "どんな内容に近い？", sub: "大まかな悩みの種類を選びます。" },
-  { step: 3, key: "target", title: "関係しているものは？", sub: "人・対象・テーマを選びます。" },
-  { step: 4, key: "situation", title: "何が一番近い？", sub: "今起きていることに近いものを選びます。" },
+  { step: 3, key: "target", title: "誰・何についての悩みですか？", sub: "関係している人・対象・テーマを選びます。" },
+  { step: 4, key: "situation", title: "今一番困っていることは？", sub: "今起きていることに近いものを選びます。" },
   { step: 5, key: "period", title: "どれくらい続いてる？", sub: "ざっくりでOKです。" },
   { step: 6, key: "emotion", title: "今の感情に近いものは？", sub: "複数ある場合は一番強いものを選びます。" },
   { step: 7, key: "goal", title: "AIに何をしてほしい？", sub: "欲しい回答の方向を選びます。" },
@@ -428,6 +472,7 @@ function start() {
   state.answers = {};
   state.currentStep = 1;
   state.currentParentId = "";
+  state.categoryNodeId = "";
   state.genre = "";
   show("wizard");
   renderStep();
@@ -444,29 +489,58 @@ function normalizeStep(s) {
   return Number.isFinite(n) ? n : null;
 }
 
+function uniqueByLabel(nodes) {
+  const seen = new Set();
+  return nodes.filter(n => {
+    const key = n.option_label;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getBranchGroup(label) {
+  if (!state.categoryNodeId) return null;
+  return DB.nodes.find(n =>
+    n.genre === state.genre &&
+    normalizeStep(n.step) === 3 &&
+    n.parent_id === state.categoryNodeId &&
+    n.option_type === "branch_group" &&
+    (n.option_label === label || n.prompt_slot === "情報カテゴリ")
+  && n.option_label === label);
+}
+
+function getChildrenOfBranch(label) {
+  const branch = getBranchGroup(label);
+  if (!branch) return [];
+  return uniqueByLabel(DB.nodes.filter(n =>
+    n.genre === state.genre &&
+    normalizeStep(n.step) === 4 &&
+    n.parent_id === branch.node_id &&
+    n.option_label &&
+    n.option_type !== "branch_group"
+  ));
+}
+
 function getNodesForStep(step) {
   if (step === 1) {
     const genres = [...new Set(DB.nodes.map(n => n.genre).filter(Boolean))];
     return genres.map((g, i) => ({ node_id: "genre_" + i, option_label: g, genre: g, step: "1" }));
   }
-  if (step >= 2 && step <= 4) {
-    let candidates = DB.nodes.filter(n => n.genre === state.genre && normalizeStep(n.step) === step);
-    if (state.currentParentId) {
-      const byParent = candidates.filter(n => n.parent_id === state.currentParentId);
-      if (byParent.length) candidates = byParent;
-      else {
-        const byLabel = candidates.filter(n => n.parent_label === state.path[state.path.length - 1]?.label);
-        if (byLabel.length) candidates = byLabel;
-      }
-    }
-    const seen = new Set();
-    return candidates.filter(n => {
-      const key = n.option_label;
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+
+  if (step === 2) {
+    return uniqueByLabel(DB.nodes.filter(n =>
+      n.genre === state.genre &&
+      normalizeStep(n.step) === 2 &&
+      n.option_label &&
+      n.option_type !== "branch_group"
+    ));
   }
+
+  // STEP3/4はDB管理用の「対象」「問題内容」を表示せず、その配下の候補だけ直接表示する
+  if (step === 3) return getChildrenOfBranch("対象");
+  if (step === 4) return getChildrenOfBranch("問題内容");
+
   if (step === 5) return DB.fallbackCommon.period.map(label => ({option_label: label}));
   if (step === 6) return DB.fallbackCommon.emotion.map(label => ({option_label: label}));
   if (step === 7) return DB.fallbackCommon.goal.map(label => ({option_label: label}));
@@ -475,6 +549,7 @@ function getNodesForStep(step) {
 }
 
 function renderStep() {
+  renderBreadcrumb();
   const def = fixedSteps[state.currentStep - 1];
   $("stepLabel").textContent = `STEP ${state.currentStep} / 9`;
   $("stepHint").textContent = def.title;
@@ -490,8 +565,22 @@ function renderStep() {
   }
 
   const nodes = getNodesForStep(state.currentStep);
+
+  if (!nodes.length && state.currentStep === 3) {
+    // 対象候補がない場合は、問題内容候補へ進む
+    state.currentStep = 4;
+    renderStep();
+    return;
+  }
+
+  if (!nodes.length && state.currentStep === 4) {
+    // 問題内容候補がない場合は、期間へ進む
+    state.currentStep = 5;
+    renderStep();
+    return;
+  }
+
   if (!nodes.length && state.currentStep <= 4) {
-    // If no deeper branch exists, jump to period.
     state.currentStep = 5;
     renderStep();
     return;
@@ -510,18 +599,26 @@ function renderStep() {
 function selectOption(n) {
   const def = fixedSteps[state.currentStep - 1];
   state.answers[def.key] = n.option_label;
+
   if (state.currentStep === 1) {
     state.genre = n.option_label;
     state.currentParentId = "";
+    state.categoryNodeId = "";
+  } else if (state.currentStep === 2) {
+    state.categoryNodeId = n.node_id || "";
+    state.currentParentId = n.node_id || "";
   } else if (state.currentStep <= 4) {
     state.currentParentId = n.node_id || "";
   }
+
   state.path.push({step: state.currentStep, key: def.key, label: n.option_label, node_id: n.node_id || ""});
+
   if (state.currentStep === 9) {
     state.answers.styleInstruction = n.instruction || "";
     renderResult();
     return;
   }
+
   state.currentStep += 1;
   renderStep();
 }
@@ -538,15 +635,22 @@ function back() {
     show("home");
     return;
   }
+
   const last = state.path.pop();
   if (last) delete state.answers[last.key];
+
   state.currentStep -= 1;
   if (state.currentStep < 1) state.currentStep = 1;
-  // Rebuild parent from latest step <=4
-  const latestParent = [...state.path].reverse().find(p => p.step >= 2 && p.step <= 4 && p.node_id);
-  state.currentParentId = latestParent ? latestParent.node_id : "";
+
   const g = state.path.find(p => p.key === "genre");
   state.genre = g ? g.label : "";
+
+  const cat = state.path.find(p => p.key === "category");
+  state.categoryNodeId = cat ? cat.node_id : "";
+
+  const latestParent = [...state.path].reverse().find(p => p.step >= 2 && p.step <= 4 && p.node_id);
+  state.currentParentId = latestParent ? latestParent.node_id : "";
+
   renderStep();
 }
 
@@ -648,6 +752,60 @@ function toast() {
   $("copyOk").classList.add("show");
   setTimeout(() => $("copyOk").classList.remove("show"), 1400);
 }
+
+
+function renderBreadcrumb() {
+  const wrap = $("breadcrumbWrap");
+  const box = $("breadcrumb");
+  if (!wrap || !box) return;
+
+  const visible = state.path
+    .filter(p => p && p.label)
+    .filter(p => !["補足なし", "補足あり"].includes(p.label));
+
+  if (!visible.length) {
+    wrap.style.display = "none";
+    box.innerHTML = "";
+    return;
+  }
+
+  wrap.style.display = "block";
+  box.innerHTML = visible.map((p, i) => {
+    const sep = i < visible.length - 1 ? `<span class="crumb-sep">＞</span>` : "";
+    return `<button class="crumb" type="button" onclick="jumpToPath(${i})">${escapeHtml(p.label)}</button>${sep}`;
+  }).join("");
+}
+
+function jumpToPath(index) {
+  const visible = state.path
+    .map((p, originalIndex) => ({...p, originalIndex}))
+    .filter(p => p && p.label)
+    .filter(p => !["補足なし", "補足あり"].includes(p.label));
+
+  const target = visible[index];
+  if (!target) return;
+
+  const keepUntil = target.originalIndex + 1;
+  const removed = state.path.slice(keepUntil);
+  removed.forEach(p => {
+    if (p && p.key) delete state.answers[p.key];
+  });
+
+  state.path = state.path.slice(0, keepUntil);
+
+  const latestGenre = state.path.find(p => p.key === "genre");
+  state.genre = latestGenre ? latestGenre.label : "";
+
+  const latestParent = [...state.path].reverse().find(p => p.step >= 2 && p.step <= 4 && p.node_id);
+  state.currentParentId = latestParent ? latestParent.node_id : "";
+
+  state.currentStep = Math.min((target.step || 1) + 1, 9);
+
+  // 対象・問題内容を直接表示する修正版の補助。
+  // STEP4に戻る場合は、直前の対象/問題内容グループ探索を壊さない。
+  renderStep();
+}
+
 
 function escapeHtml(str) {
   return String(str ?? "").replace(/[&<>"']/g, s => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[s]));
